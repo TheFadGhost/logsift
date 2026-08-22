@@ -132,7 +132,3 @@ def strip_ansi_len(text: str) -> int:
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def eprint(*args) -> None:  # pragma: no cover
-    print(*args, file=sys.stderr)

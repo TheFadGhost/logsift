@@ -13,6 +13,7 @@ EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\u2b00-\u2bff]"
 )
 STUB_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b")
+STUB_ALLOW = {Path(__file__)}
 BARE_EXCEPT_RE = re.compile(r"except\s*:")
 CLOCK_RE = re.compile(
     r"time\.time\(|time\.monotonic\(|datetime\.now\(|datetime\.utcnow\("
@@ -52,7 +53,12 @@ def test_no_real_clock_in_tests():
 
 
 def test_no_stubs():
-    bad = _check(list(_py_files(PKG)) + list(_py_files(TESTS)), [STUB_RE], "stub marker")
+    bad = _check(
+        list(_py_files(PKG)) + list(_py_files(TESTS)),
+        [STUB_RE],
+        "stub marker",
+        allow=STUB_ALLOW,
+    )
     assert not bad, "\n" + "\n".join(bad)
 
 
