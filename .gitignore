@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tool state: baselines, captured logs, output
+*.logsift-state
+*.logsift-baseline
+state/*.json
+captures/
+output/
+out/
+*.log
+!tests/**/expected/*.log
+
+# Test / benchmark artifacts
+.pytest_cache/
+.benchmarks/
+bench_results/
+htmlcov/
+.coverage
+
+# OS noise
+Thumbs.db
+.DS_Store
