@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logsift"
+version = "0.1.0"
+description = "Streaming log analyzer that learns normal message templates and flags anomalies as they happen"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Logsift contributors" }]
+keywords = ["logs", "anomaly-detection", "observability", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: System :: Logging",
+]
+dependencies = []
+
+[project.scripts]
+logsift = "logsift.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["logsift*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
