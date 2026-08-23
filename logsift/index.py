@@ -23,6 +23,7 @@ evicting during iteration never distorts or truncates the walk.
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Iterator
@@ -99,7 +100,8 @@ class StreamingIndex:
     """Fixed-capacity ring of EventRows with O(1) add and lifetime aggregates."""
 
     __slots__ = ("_rows", "_max_events", "_lines_total", "_unparsed_total",
-                 "_levels", "_first_ts", "_last_ts", "_evicted", "_stats")
+                 "_levels", "_first_ts", "_last_ts", "_evicted", "_stats",
+                 "_stats_lock")
 
     def __init__(self, max_events: int = 100_000) -> None:
         if max_events < 1:
@@ -113,6 +115,7 @@ class StreamingIndex:
         self._last_ts: float | None = None
         self._evicted = 0
         self._stats: dict[str, _Stat] = {}
+        self._stats_lock = threading.Lock()
 
     def add(self, event: Event) -> None:
         """Index one event. O(1); evicts the oldest row beyond max_events."""
@@ -151,11 +154,12 @@ class StreamingIndex:
         if row.template_id is not None:
             st.tid = row.template_id
         bucket = int(row.ts // _MINUTE)
-        minutes = st.minutes
-        if minutes and minutes[-1][0] == bucket:
-            minutes[-1][1] += 1
-        else:
-            minutes.append([bucket, 1])
+        with self._stats_lock:
+            minutes = st.minutes
+            if minutes and minutes[-1][0] == bucket:
+                minutes[-1][1] += 1
+            else:
+                minutes.append([bucket, 1])
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -169,16 +173,17 @@ class StreamingIndex:
 
     def template_stats(self) -> dict[str, TemplateStat]:
         """Stats keyed by template TEXT; returned copies are safe to keep."""
-        return {
-            st.text: TemplateStat(
-                template_id=st.tid,
-                text=st.text,
-                count=st.count,
-                last_seen=st.last_seen,
-                minute_counts=deque((count for _, count in st.minutes)),
-            )
-            for st in self._stats.values()
-        }
+        with self._stats_lock:
+            return {
+                st.text: TemplateStat(
+                    template_id=st.tid,
+                    text=st.text,
+                    count=st.count,
+                    last_seen=st.last_seen,
+                    minute_counts=deque((count for _, count in st.minutes)),
+                )
+                for st in self._stats.values()
+            }
 
     def totals(self) -> Totals:
         """Lifetime totals; first/last ts cover every event ever added."""

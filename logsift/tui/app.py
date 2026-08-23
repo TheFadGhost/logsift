@@ -9,7 +9,7 @@ from typing import Callable, Protocol
 
 from ..clock import Clock
 from ..snapshot import SnapshotProvider
-from ..themes import Theme
+from ..themes import Mode, Theme
 from .input import InputReader
 from .renderer import (
     ALT_ENTER,
@@ -109,10 +109,12 @@ class TuiApp:
         stream = self.stream
         vt_enabled = enable_windows_vt()
         reader: InputReader | None = None
+        plain = getattr(self.theme, "mode", None) == Mode.OFF
         try:
-            stream.write(ALT_ENTER)
-            stream.write(CURSOR_HIDE)
-            stream.flush()
+            if not plain:
+                stream.write(ALT_ENTER)
+                stream.write(CURSOR_HIDE)
+                stream.flush()
             if self.keyboard:
                 reader = InputReader(self.actions if self.actions is not None else self)
                 reader.start()
@@ -120,7 +122,10 @@ class TuiApp:
             frames = 0
             while self._running:
                 start = self.clock.monotonic()
-                stream.write(self.render_once())
+                text = self.render_once()
+                if plain:
+                    text = text + "\n"
+                stream.write(text)
                 stream.flush()
                 frames += 1
                 if max_frames is not None and frames >= max_frames:
@@ -132,9 +137,10 @@ class TuiApp:
         finally:
             if reader is not None:
                 reader.stop()
-            stream.write(CURSOR_SHOW)
-            stream.write(ALT_EXIT)
-            stream.flush()
+            if not plain:
+                stream.write(CURSOR_SHOW)
+                stream.write(ALT_EXIT)
+                stream.flush()
             restore_windows_vt()
 
     def _track_state(self, state: str | None) -> None:

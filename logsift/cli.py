@@ -157,7 +157,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
         return EXIT_OK
 
     from .tui.app import TuiApp
-    from .tui.renderer import get_theme
+    from .themes import get_theme
 
     theme = get_theme(cfg.theme)
 
@@ -169,16 +169,29 @@ def cmd_run(ns: argparse.Namespace) -> int:
             engine.request_stop()
 
         def on_select(self, index: int) -> None:
-            pass
+            self._sync_selection()
 
         def on_open_detail(self) -> None:
-            pass
+            self._sync_selection()
 
         def on_close_detail(self) -> None:
             pass
 
         def on_cycle_panel(self) -> None:
             pass
+
+        def _sync_selection(self) -> None:
+            snap = provider.latest()
+            if snap is None or not snap.alerts:
+                return
+            idx = getattr(app, "_sel_feed", 0)
+            if 0 <= idx < len(snap.alerts):
+                tid = snap.alerts[idx].template_id
+                tstats = engine.index.template_stats()
+                for text, st in tstats.items():
+                    if st.template_id == tid:
+                        engine.selected_template_text = text
+                        return
 
     app = TuiApp(provider, theme, clock, actions=_Actions())
     worker = threading.Thread(target=engine.run_source, args=(source,), daemon=True)

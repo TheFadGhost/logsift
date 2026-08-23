@@ -184,6 +184,7 @@ class Engine:
         self._last_baseline_save_mono = clock.monotonic()
         self._last_event_tick_ts: float | None = None
         self._warm_cached = False
+        self.selected_template_text: str | None = None
 
     # ------------------------------------------------------------------ run
 
@@ -451,6 +452,21 @@ class Engine:
         )
         volume = tuple(c for _m, c in sorted(self._minute_ring)[-120:])
         warmup = self.baselines.warmup()
+        history = None
+        examples = None
+        sel = self.selected_template_text
+        if sel is not None:
+            st = self.index.template_stats().get(sel)
+            if st is not None and st.minute_counts:
+                history = tuple(st.minute_counts)
+                ex = []
+                for row in self.index.iter_rows(reverse=True):
+                    if row.template_text == sel:
+                        if len(ex) < 3:
+                            ex.append(row.raw[:240])
+                    if len(ex) >= 3:
+                        break
+                examples = tuple(ex)
         snap = Snapshot(
             generated_mono=mono,
             uptime_s=max(0.0, mono - self._start_mono),
@@ -468,6 +484,8 @@ class Engine:
             top_templates=summaries,
             alerts=tuple(self._recent_alerts),
             volume_series=volume,
+            selected_template_history=history,
+            selected_template_examples=examples,
         )
         self.provider.publish(snap)
 

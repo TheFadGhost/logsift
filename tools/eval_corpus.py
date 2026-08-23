@@ -53,7 +53,7 @@ def run_replay(corpus: Path, cfg: Config) -> list[dict]:
         pass
     finally:
         source.stop()
-    return engine.recent_alerts()
+    return [a.to_json_dict() for a in engine.recent_alerts()]
 
 
 def _raise_stream_end(_seconds: float) -> None:

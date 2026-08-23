@@ -41,7 +41,7 @@ Watch it live in the TUI:
 logsift run generated/demo/corpus.jsonl        # follows; Ctrl+C or q to quit
 logsift run -                                  # stdin
 logsift run tcp:0.0.0.0:5140                   # TCP listener
-logsift run dir:/var/log/myapp                 # rotated + gzipped directory
+logsift run dir:C:/logs/myapp                  # rotated + gzipped directory (any OS path)
 ```
 
 Headless JSON alerts for piping:
@@ -94,7 +94,7 @@ in   14.1k l/s  win   14.1k l/s  err    0.7%  unparsed       0 (0.0%)  events   
 | syslog | RFC3164 and RFC5424; RFC3164 year inferred from ingest date |
 | Custom | Your regex with named groups (`ts`, `level`, `message` special-cased) |
 
-Format auto-detection runs on the first 50 lines with a stated confidence.
+Format auto-detection samples up to the first 200 lines and locks the best format with a stated confidence.
 Unparseable lines are never silently dropped: they are counted, shown in the
 header (`unparsed N (x.y%)`), listed in the detail view with the reason, and
 reported at exit. Invalid UTF-8 decodes losslessly with U+FFFD and is flagged.
@@ -172,7 +172,7 @@ sequences (asserted by test), because detection runs on event time end to end.
 Method: `tools/bench_ingest.py --input FILE --runs N` feeds the file through
 the real pipeline in-process and times with monotonic clock deltas. Hardware
 for the numbers below: Windows 10 (build 26200), 28 CPUs, Python 3.11.9;
-input `generated/demo/corpus.jsonl` (17.6 MB, avg line 153 B, mixed JSON/
+input `generated/demo/corpus.jsonl` (18.4 MB, avg line 153 B, mixed JSON/
 logfmt/access/syslog).
 
 - Parse + template + index (no detectors): **~25,700 lines/s** (fresh process).
@@ -223,7 +223,7 @@ poll_interval_s = 0.25
 
 [[hooks]]
 type = "exec"                 # payload arrives on STDIN, never via shell
-argv = ["/usr/bin/python", "/opt/oncall.py"]
+argv = ["python", "C:/opt/oncall.py"]   # any executable + script
 timeout_s = 10.0
 # dry_run = true              # print instead of executing
 
@@ -233,7 +233,7 @@ url = "https://alerts.example.test/hook"
 headers = { Authorization = "Bearer ..." }
 dry_run = true
 
-[detectors]                   # all keys optional; defaults shown in docs/
+[detectors]                   # all keys optional; every default lives in logsift/detectors/base.py
 volume_elevated_z = 4.0
 volume_anomalous_z = 6.0
 volume_critical_z = 10.0
@@ -319,3 +319,4 @@ get plain text automatically.
 ## License
 
 MIT - see LICENSE.
+

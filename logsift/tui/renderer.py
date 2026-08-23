@@ -8,6 +8,7 @@ positioning. No raw SGR codes outside theme.paint/style; no system clock.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -235,24 +236,36 @@ def render_template(theme: Theme, text: str) -> str:
 
 
 def render_template_clipped(theme: Theme, text: str, budget: int) -> str:
+    """Painted string form; prefer template_segments for cell grids."""
+    return "".join(
+        theme.paint(token, piece) for piece, token in template_segments(text, budget)
+    )
+
+
+_SLOT_GROUP_RE = re.compile(r"\{[^{}]*\}")
+
+
+def template_segments(text: str, budget: int) -> list[tuple[str, str]]:
+    """Clipped template as [(plain_text, token)] segments.
+
+    Truncation keeps BOTH ends (truncate_middle). Slot detection after
+    clipping is brace-based, so literal braces in log content may render
+    accented in the rare case a slot is cut - cosmetic only.
+    """
     if budget <= 0:
-        return ""
-    out: list[str] = []
-    used = 0
-    for piece, is_slot in split_template_slots(sanitize_for_display(text)):
-        shown = "{*}" if is_slot else piece
-        pw = display_width(shown)
-        if used + pw <= budget:
-            token = Token.ACCENT if is_slot else Token.NORMAL
-            out.append(theme.paint(token, shown))
-            used += pw
-            continue
-        remaining = budget - used
-        if remaining >= 2:
-            token = Token.ACCENT if is_slot else Token.NORMAL
-            out.append(theme.paint(token, truncate_end(shown, remaining)))
-        break
-    return "".join(out)
+        return []
+    full = "".join("{*}" if is_slot else piece for piece, is_slot in split_template_slots(sanitize_for_display(text)))
+    clipped = truncate_middle(full, budget)
+    segs: list[tuple[str, str]] = []
+    pos = 0
+    for m in _SLOT_GROUP_RE.finditer(clipped):
+        if m.start() > pos:
+            segs.append((clipped[pos:m.start()], Token.NORMAL))
+        segs.append((m.group(0), Token.ACCENT))
+        pos = m.end()
+    if pos < len(clipped):
+        segs.append((clipped[pos:], Token.NORMAL))
+    return segs
 
 
 def wrap_hang(text: str, width: int, indent: int = 2, max_lines: int = 2) -> list[str]:
@@ -272,9 +285,10 @@ def wrap_hang(text: str, width: int, indent: int = 2, max_lines: int = 2) -> lis
         if not words:
             break
     if words:
-        lines[-1] = truncate_end(
-            lines[-1] + " " + " ".join(words[:2]), limits[min(len(lines), max_lines) - 1]
-        )
+        rest = lines[-1] + " " + " ".join(words)
+        # Both-ends truncation so trailing facts (the threshold clause)
+        # survive when an entry overflows its line budget.
+        lines[-1] = truncate_middle(rest, limits[min(len(lines), max_lines) - 1])
     return lines
 
 
@@ -333,6 +347,13 @@ class Screen:
                 self.chars[y][col + 1] = ""
                 self.tokens[y][col + 1] = token
             col += cw
+        return col
+
+    def write_segments(self, x: int, y: int, segments) -> int:
+        """Write [(text, token)] pieces - never raw SGR strings into cells."""
+        col = max(0, x)
+        for text, token in segments:
+            col = self.write(col, y, text, token)
         return col
 
     def hline(self, x: int, y: int, width: int, token: str | None) -> None:
@@ -520,7 +541,7 @@ class FrameRenderer:
         x = scr.write(x + 1, y, rjust_width(fmt_rate(snap.window_rate_lps), RATE_W), Token.NORMAL)
         x = scr.write(x + 2, y, "err", Token.DIM)
         x = scr.write(x + 1, y, rjust_width(fmt_pct(snap.error_rate_pct), PCT_W), Token.ELEVATED)
-        unparsed = f"{rjust_width(str(snap.unparsed_count), COUNT_W)} ({fmt_pct(snap.unparsed_pct)})"
+        unparsed = f"{fmt_count(snap.unparsed_count)} ({fmt_pct(snap.unparsed_pct)})"
         x = scr.write(x + 2, y, "unparsed", Token.DIM)
         x = scr.write(x + 1, y, unparsed, Token.NORMAL)
         x = scr.write(x + 2, y, "events", Token.DIM)
@@ -532,7 +553,7 @@ class FrameRenderer:
         x = scr.write(x + 2, y, "err", Token.DIM)
         x = scr.write(x + 1, y, rjust_width(fmt_pct(snap.error_rate_pct), PCT_W), Token.ELEVATED)
         x = scr.write(x + 2, y, "unp", Token.DIM)
-        x = scr.write(x + 1, y, rjust_width(str(snap.unparsed_count), COUNT_W), Token.NORMAL)
+        x = scr.write(x + 1, y, fmt_count(snap.unparsed_count), Token.NORMAL)
         x = scr.write(x + 2, y, "ev", Token.DIM)
         scr.write(x + 1, y, rjust_width(fmt_count(snap.total_events), COUNT_W), Token.NORMAL)
 
@@ -593,7 +614,7 @@ class FrameRenderer:
             if bar_w:
                 cx = scr.write(cx, row, hbar(item.count, vmax, bar_w), Token.NORMAL)
                 cx += 1
-            scr.write(cx, row, render_template_clipped(self.theme, item.text, tmpl_w))
+            scr.write_segments(cx, row, template_segments(item.text, tmpl_w))
             row += 1
         if not items:
             scr.write(x + 2, row, "no templates yet", Token.DIM)
@@ -621,7 +642,7 @@ class FrameRenderer:
             msg = "no anomalies - stream looked normal"
             scr.write(x + 2, y + 1, msg, Token.DIM)
             return
-        prefix_w = 1 + 1 + SEV_WORD_W + 1 + DET_W + 1 + TID_W + 1
+        prefix_w = 1 + 1 + SEV_WORD_W + 1 + DET_W + 1 + TID_W + 2
         tmpl_w = max(6, inner_w - prefix_w - TIME_W - 1)
         row = y + 1
         bottom = y + h - 2
@@ -640,7 +661,7 @@ class FrameRenderer:
             cx = scr.write(cx + 1, row, truncate_end(alert.detector, DET_W).ljust(DET_W), Token.DIM)
             cx = scr.write(cx + 1, row, rjust_width(tid, TID_W), Token.DIM)
             cx += 1
-            cx = scr.write(cx, row, render_template_clipped(self.theme, alert.template_text, tmpl_w))
+            cx = scr.write_segments(cx, row, template_segments(alert.template_text, tmpl_w))
             when = clock_hms(alert.event_time or alert.window_end)
             scr.write(x + 1 + inner_w - TIME_W, row, rjust_width(when, TIME_W), Token.DIM)
             row += 1
@@ -741,7 +762,11 @@ class FrameRenderer:
             sev_tok,
         )
         cx = scr.write(cx + 1, row, f"[{alert.detector}]", Token.DIM)
-        scr.write(cx + 1, row, render_template_clipped(self.theme, alert.template_text, inner_w - (cx - ox + 3)), Token.NORMAL)
+        scr.write_segments(
+            cx + 1,
+            row,
+            template_segments(alert.template_text, inner_w - (cx - ox + 3)),
+        )
         row += 1
         for line in wrap_hang(anatomy_line2(alert), inner_w, max_lines=3):
             if row > bottom:
@@ -842,3 +867,4 @@ class DiffRenderer:
 
 def feed_order(snap: Snapshot) -> tuple[Alert, ...]:
     return tuple(reversed(snap.alerts))
+

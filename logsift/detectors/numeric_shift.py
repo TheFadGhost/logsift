@@ -11,15 +11,17 @@ from .base import BaseDetector, DetectorContext
 
 _MAX_SAMPLES = 2000
 _PRIOR_MULTIPLE = 3
+_REBOUND_WINDOW_S = 7200.0
 
 
 class _Series:
-    __slots__ = ("vals", "seen_since_eval", "last_alert")
+    __slots__ = ("vals", "seen_since_eval", "last_alert", "last_direction")
 
     def __init__(self) -> None:
         self.vals: deque[tuple[float, float]] = deque(maxlen=_MAX_SAMPLES)
         self.seen_since_eval: int = 0
         self.last_alert: float = -math.inf
+        self.last_direction: str = ""
 
 
 class NumericShiftDetector(BaseDetector):
@@ -76,6 +78,7 @@ class NumericShiftDetector(BaseDetector):
                 alert = self._compare(text, name, key, series, ts, cfg)
                 if alert is not None:
                     series.last_alert = ts
+                    series.last_direction = alert.deviation_desc.split(":")[0]
                     self._buf.append(alert)
 
     def tick(self, now: float) -> list[Alert]:
@@ -115,6 +118,14 @@ class NumericShiftDetector(BaseDetector):
         if med_r is None or med_p is None:
             return None
         direction = "increase" if z > 0 else "decrease"
+        # Rebound suppression: when a shift REVERTS within two hours of the
+        # original alert, that is the incident closing, not a new anomaly.
+        if (
+            series.last_direction
+            and direction != series.last_direction
+            and now_ts - series.last_alert < _REBOUND_WINDOW_S
+        ):
+            return None
         if med_p != 0:
             pct = f"{(med_r - med_p) / abs(med_p) * 100.0:+.0f}%"
         else:
