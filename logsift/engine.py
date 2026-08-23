@@ -181,6 +181,7 @@ class Engine:
         self._last_line_mono: float | None = None
         self._start_mono = clock.monotonic()
         self._last_baseline_save_mono = clock.monotonic()
+        self._last_event_tick_ts: float | None = None
 
     # ------------------------------------------------------------------ run
 
@@ -276,6 +277,8 @@ class Engine:
                 break
             self._process_raw(raw, self.clock.monotonic())
             self._drain_tick()
+            if self.stats.last_ts is not None:
+                self._maybe_event_time_tick(self.stats.last_ts)
 
     def _event_time_now(self) -> float:
         """Detector 'now' follows event time so replay matches live behaviour."""
@@ -288,7 +291,21 @@ class Engine:
             mono = self._tick_queue.get_nowait()
         except queue.Empty:
             return
+        self._run_ticks(mono)
+
+    def _maybe_event_time_tick(self, event_ts: float) -> None:
+        """Drive periodic detector ticks by EVENT time so replay at full speed
+        behaves like a live stream; the monotonic timer only covers idle gaps."""
+        if (
+            self._last_event_tick_ts is None
+            or event_ts - self._last_event_tick_ts >= TICK_INTERVAL_S
+        ):
+            self._run_ticks(self.clock.monotonic())
+
+    def _run_ticks(self, mono: float) -> None:
         now = self._event_time_now()
+        if self.stats.last_ts is not None:
+            self._last_event_tick_ts = now
         alerts: list = []
         for det in self.detectors:
             alerts.extend(det.tick(now))

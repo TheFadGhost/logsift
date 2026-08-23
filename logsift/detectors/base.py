@@ -36,6 +36,7 @@ class DetectorConfig:
     numeric_max_fields_per_template: int = 8
     # new templates
     new_template_grace_s: float = 0.0
+    new_template_min_count: int = 2
     # stopped templates
     stopped_check_interval_s: float = 30.0
     stopped_gap_factor: float = 10.0
@@ -43,12 +44,14 @@ class DetectorConfig:
     stopped_min_history: int = 200
     # rare sequences
     sequence_ngram_n: int = 3
-    sequence_max_baseline_count: int = 1
-    sequence_min_observed: int = 3
-    sequence_cooldown_s: float = 600.0
+    sequence_gap_s: float = 2.0
+    sequence_max_baseline_count: int = 2
+    sequence_min_observed: int = 4
+    sequence_cooldown_s: float = 900.0
     sequence_max_ngrams: int = 50000
     sequence_min_component_count: int = 5
-    sequence_max_alerts_per_hour: int = 6
+    sequence_max_alerts_per_hour: int = 3
+    sequence_max_dominant_share: float = 0.6
 
 
 @dataclass(slots=True)
@@ -79,3 +82,4 @@ class BaseDetector(ABC):
 
     def flush(self, now: float) -> list[Alert]:
         return self.tick(now)
+

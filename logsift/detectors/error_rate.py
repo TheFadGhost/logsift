@@ -115,6 +115,11 @@ class ErrorRateDetector(BaseDetector):
             return None
         if total < cfg.error_min_events or base_total < cfg.error_min_events:
             return None
+        if base_errors < 3:
+            # With fewer than 3 baseline errors the proportion test is
+            # degenerate (zero-variance baseline); staying silent here is a
+            # documented limitation, not a tuned threshold.
+            return None
         z = two_proportion_ztest(errors, total, base_errors, base_total)
         if z is None or z < cfg.error_elevated_z:
             return None

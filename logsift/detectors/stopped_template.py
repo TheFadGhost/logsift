@@ -82,14 +82,14 @@ class StoppedTemplateDetector(BaseDetector):
         if self._next_check is not None and now < self._next_check:
             return []
         self._next_check = now + cfg.stopped_check_interval_s
-        alerts: list[Alert] = []
+        candidates: list[tuple[str, _Track, float, float, str]] = []
         for text, tr in list(self._tracks.items()):
             if tr.fired or tr.count < cfg.stopped_min_history:
                 continue
             gap = now - tr.last_seen
             if gap <= 0.0:
                 continue
-            rate_hr, source = self._rate_hr(text, tr)
+            rate_hr, source = self._rate_hr(text, tr, now)
             if rate_hr is None or rate_hr <= 0.0 or not math.isfinite(rate_hr):
                 continue
             interval_s = 3600.0 / rate_hr
@@ -98,8 +98,36 @@ class StoppedTemplateDetector(BaseDetector):
                 continue
             if expected_count < cfg.stopped_min_expected:
                 continue
-            tr.fired = True
+            candidates.append((text, tr, gap, interval_s, source))
+        if not candidates:
+            return []
+        # Systemic-event guard: when many established templates go silent
+        # together (stream-wide disruption, one template absorbing the whole
+        # stream), silence is a symptom of that anomaly - volume and others
+        # own it. Fire only when silent templates remain a minority among
+        # established peers.
+        silent = 0.0
+        total_peers = 0.0
+        for text_b, tr_b in self._tracks.items():
+            if tr_b.count < cfg.stopped_min_history:
+                continue
+            gap_b = now - tr_b.last_seen
+            if gap_b <= 0.0:
+                continue
+            rate_b, _src = self._rate_hr(text_b, tr_b, now)
+            if rate_b is None or rate_b <= 0.0:
+                continue
+            total_peers += 1.0
+            if gap_b > (3600.0 / rate_b) * cfg.stopped_gap_factor * 0.5:
+                silent += 1.0
+        alerts: list[Alert] = []
+        suppressed_by_guard = total_peers > 4 and silent / max(1.0, total_peers) > 0.3
+        for text, tr, gap, interval_s, source in candidates:
             ratio = gap / interval_s
+            if suppressed_by_guard:
+                # Do not mark fired: re-evaluate when the systemic event ends.
+                continue
+            tr.fired = True
             severity = Severity.from_score_bands(ratio, 10.0, 25.0, 50.0)
             alerts.append(
                 Alert(
@@ -129,9 +157,9 @@ class StoppedTemplateDetector(BaseDetector):
             )
         return alerts
 
-    def _rate_hr(self, text: str, tr: _Track) -> tuple[float | None, str]:
+    def _rate_hr(self, text: str, tr: _Track, now: float) -> tuple[float | None, str]:
         key = f"volume:{text}"
-        base = self.ctx.baselines.volume_baseline(key, self.ctx.clock.now())
+        base = self.ctx.baselines.volume_baseline(key, now)
         if base is None or base.median <= 0.0:
             base = self.ctx.baselines.volume_baseline(key, tr.last_seen)
         if base is not None and base.median > 0.0:

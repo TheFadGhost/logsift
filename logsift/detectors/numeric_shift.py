@@ -1,4 +1,4 @@
-"""Numeric field distribution-shift detection via Mann-Whitney U on sliding windows."""
+"""Numeric field distribution-shift detection via Mann-Whitney U on sample windows."""
 
 from __future__ import annotations
 
@@ -10,28 +10,30 @@ from ..statsutil import mann_whitney_u, median
 from .base import BaseDetector, DetectorContext
 
 _MAX_SAMPLES = 2000
+_PRIOR_MULTIPLE = 3
 
 
 class _Series:
-    __slots__ = ("vals", "last_eval", "last_alert")
+    __slots__ = ("vals", "seen_since_eval", "last_alert")
 
     def __init__(self) -> None:
         self.vals: deque[tuple[float, float]] = deque(maxlen=_MAX_SAMPLES)
-        self.last_eval: float = -math.inf
+        self.seen_since_eval: int = 0
         self.last_alert: float = -math.inf
 
 
 class NumericShiftDetector(BaseDetector):
-    """Alerts when a numeric field's recent window shifts against its prior.
+    """Alerts when a numeric field's recent samples shift against its prior.
 
-    Per (template text, field) a bounded ring of ``(ts, value)`` samples is
-    kept (at most 2000 per field, at most ``numeric_max_fields_per_template``
-    most-recently-seen fields per template). Once per ``numeric_window_s`` the
-    last window is compared with the preceding ``numeric_baseline_s`` via
-    ``mann_whitney_u``; when the own prior window is still thin, the seeded
-    mirror in the baseline store backs it up. Samples are also mirrored into
-    the store so history survives restarts. Alerts cool down for one window
-    per field; direction is reported with the medians.
+    Comparisons are SAMPLE-count based so slow streams are still judged once
+    enough evidence exists: the last ``numeric_min_samples`` values are tested
+    against up to ``3x`` that many preceding values (own ring first, then the
+    persistent mirror in the baseline store). Samples are mirrored into the
+    store keyed by template text and field name so history survives restarts.
+    A field cools down for one window's worth of event time after each alert;
+    direction is reported with both medians. Bounded memory: at most 2000
+    samples per field, at most ``numeric_max_fields_per_template`` fields per
+    template (least-recently-seen evicted).
     """
 
     id = "numeric_shift"
@@ -52,8 +54,6 @@ class NumericShiftDetector(BaseDetector):
         if fields is None:
             fields = self._templates[text] = OrderedDict()
         cfg = self.ctx.config
-        w = float(cfg.numeric_window_s)
-        span = float(cfg.numeric_baseline_s)
         for name, raw in ev.numeric.items():
             if isinstance(raw, bool) or not isinstance(raw, (int, float)):
                 continue
@@ -68,13 +68,14 @@ class NumericShiftDetector(BaseDetector):
             while len(fields) > cfg.numeric_max_fields_per_template:
                 fields.popitem(last=False)
             series.vals.append((ts, value))
+            series.seen_since_eval += 1
             key = f"numeric:{text}:{name}"
-            self.ctx.baselines.observe_numeric(key, value)
-            if now - series.last_eval >= w:
-                series.last_eval = now
-                alert = self._compare(text, name, key, series, now, w, span)
+            self.ctx.baselines.observe_numeric(key, value, epoch=ts)
+            if series.seen_since_eval >= cfg.numeric_min_samples:
+                series.seen_since_eval = 0
+                alert = self._compare(text, name, key, series, ts, cfg)
                 if alert is not None:
-                    series.last_alert = now
+                    series.last_alert = ts
                     self._buf.append(alert)
 
     def tick(self, now: float) -> list[Alert]:
@@ -87,33 +88,27 @@ class NumericShiftDetector(BaseDetector):
         name: str,
         key: str,
         series: _Series,
-        now: float,
-        w: float,
-        span: float,
+        now_ts: float,
+        cfg,
     ) -> Alert | None:
-        cfg = self.ctx.config
-        t1 = now - w
-        t0 = t1 - span
-        recent: list[float] = []
-        prior: list[float] = []
-        for ts, v in series.vals:
-            if ts >= t1:
-                recent.append(v)
-            elif ts >= t0:
-                prior.append(v)
-        if len(recent) < cfg.numeric_min_samples:
+        k = cfg.numeric_min_samples
+        vals = list(series.vals)
+        if len(vals) < k:
             return None
-        if len(prior) < cfg.numeric_min_samples:
+        recent = [v for _ts, v in vals[-k:]]
+        prior = [v for _ts, v in vals[-(k * (_PRIOR_MULTIPLE + 1)) : -k]]
+        if len(prior) < k:
             prior = [float(v) for v in self.ctx.baselines.numeric_sample(key)]
-            if len(prior) < cfg.numeric_min_samples:
-                return None
+            prior = prior[:-k] if len(prior) > k else prior
+        if len(prior) < k:
+            return None
         result = mann_whitney_u(recent, prior)
         if result is None:
             return None
         _, z = result
         if abs(z) < cfg.numeric_elevated_z:
             return None
-        if now - series.last_alert < w:
+        if now_ts - series.last_alert < cfg.numeric_window_s:
             return None
         med_r = median(recent)
         med_p = median(prior)
@@ -130,19 +125,18 @@ class NumericShiftDetector(BaseDetector):
             cfg.numeric_anomalous_z,
             cfg.numeric_critical_z,
         )
+        window_start = vals[-k][0]
         return Alert(
             detector=self.id,
             severity=severity,
             template_id=None,
             template_text=text,
             baseline_desc=(
-                f"median {name} {med_p:g} over prior {span:g}s "
-                f"(n={len(prior)} samples)"
+                f"median {name} {med_p:g} over prior {len(prior)} samples"
             ),
             baseline_value=med_p,
             observed_desc=(
-                f"median {name} {med_r:g} over last {w:g}s "
-                f"(n={len(recent)} samples)"
+                f"median {name} {med_r:g} over last {len(recent)} samples"
             ),
             observed_value=med_r,
             deviation_desc=(
@@ -154,8 +148,8 @@ class NumericShiftDetector(BaseDetector):
                 f"|MW-U z| >= {cfg.numeric_elevated_z:g} (elevated band)"
             ),
             threshold_value=cfg.numeric_elevated_z,
-            window_start=now - w,
-            window_end=now,
+            window_start=window_start,
+            window_end=now_ts,
             group_key=f"numeric_shift:{text}:{name}",
-            event_time=now,
+            event_time=now_ts,
         )

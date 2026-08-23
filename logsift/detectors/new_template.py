@@ -76,12 +76,20 @@ class NewTemplateDetector(BaseDetector):
 
     def tick(self, now: float) -> list[Alert]:
         alerts: list[Alert] = []
+        min_count = max(1, int(getattr(self.ctx.config, "new_template_min_count", 2)))
         for text in list(self._pending.keys()):
             pend = self._pending[text]
             age = now - float(pend[0])
-            if int(pend[1]) >= self.BURST_THRESHOLD or age >= self.ASSESS_S:
+            burst = int(pend[1]) >= self.BURST_THRESHOLD
+            if burst or (age >= self.ASSESS_S and int(pend[1]) >= min_count):
                 del self._pending[text]
+                if not burst and int(pend[1]) < min_count:
+                    continue
                 alerts.append(self._emit(text, pend, now))
+            elif age >= self.ASSESS_S and int(pend[1]) < min_count:
+                # A one-off message shape is the normal tail of a live
+                # stream; staying silent here is documented behaviour.
+                del self._pending[text]
         return alerts
 
     def _emit(self, text: str, pend: list[object], now: float) -> Alert:

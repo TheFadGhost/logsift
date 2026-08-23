@@ -181,8 +181,7 @@ def test_rejects_lines_below_reserved_budget(tmp_path: Path) -> None:
 def test_line_emitters_format_correctness() -> None:
     rng = random.Random(99)
     ts = gen_corpus.BASE_EPOCH + 40_000
-    for fam in gen_corpus.APP_FAMILIES + (gen_corpus.FAM_PURGE, gen_corpus.FAM_SEQ_A,
-                                          gen_corpus.FAM_SEQ_B):
+    for fam in gen_corpus.APP_FAMILIES + (gen_corpus.FAM_PURGE,):
         for level in ("info", "error"):
             json_line = gen_corpus.emit_app(fam, ts, level, "json", rng,
                                             gen_corpus.NORMAL_DURATION_MS)
@@ -203,8 +202,17 @@ def test_line_emitters_format_correctness() -> None:
         line = gen_corpus.emit_access(fam, ts, rng)
         assert ACCESS_SHAPE_RE.match(line), line
         assert IPv4_RE.match(line).group(0).startswith(DOC_PREFIXES)
-    for fam in gen_corpus.SYSLOG_FAMILIES + (gen_corpus.FAM_SEQ_C,):
+    for fam in gen_corpus.SYSLOG_FAMILIES:
         line = gen_corpus.emit_syslog(fam, ts, rng)
         assert SYSLOG_SHAPE_RE.match(line), line
         host = line.split(" ")[3]
         assert host in gen_corpus.HOSTS
+
+
+def test_rare_sequence_families_are_established_and_distinct() -> None:
+    specials = {id(gen_corpus.FAM_SPIKE), id(gen_corpus.FAM_STOPPED)}
+    trio = (gen_corpus.FAM_SEQ_A, gen_corpus.FAM_SEQ_B, gen_corpus.FAM_SEQ_C)
+    assert len({f.fid for f in trio}) == 3
+    for f in trio:
+        assert f in gen_corpus.APP_FAMILIES
+        assert id(f) not in specials

@@ -75,6 +75,7 @@ def test_new_template_silent_during_warmup_then_fires_once() -> None:
         clock.advance(1.0)
     gate.done = True
     det.observe(_ev(clock.now(), 2, "quantum flux engaged"), clock.now())
+    det.observe(_ev(clock.now(), 2, "quantum flux engaged"), clock.now())
     assert _drain(det, clock) == []
     clock.advance(61.0)
     alerts = _drain(det, clock)
@@ -90,6 +91,7 @@ def test_new_template_silent_during_warmup_then_fires_once() -> None:
         clock.advance(1.0)
     clock.advance(61.0)
     assert _drain(det, clock) == []
+    det.observe(_ev(clock.now(), 3, "second novel line"), clock.now())
     det.observe(_ev(clock.now(), 3, "second novel line"), clock.now())
     clock.advance(61.0)
     again = _drain(det, clock)
@@ -119,7 +121,8 @@ def test_new_template_lru_eviction_allows_refire() -> None:
     gate.done = True
     det = NewTemplateDetector(_ctx(clock, BaselineStore(clock), gate), lru_cap=2)
     seen_texts: list[str] = []
-    for text in ["alpha", "beta", "gamma", "alpha", "gamma"]:
+    for text in ["alpha", "beta", "gamma", "alpha"]:
+        det.observe(_ev(clock.now(), 1, text), clock.now())
         det.observe(_ev(clock.now(), 1, text), clock.now())
         clock.advance(61.0)
         for a in _drain(det, clock):
@@ -136,7 +139,9 @@ def test_new_template_grace_absorbs_settling_noise() -> None:
     clock.advance(1.0)
     gate.done = True
     det.observe(_ev(clock.now(), 4, "grace ghost"), clock.now())
+    det.observe(_ev(clock.now(), 4, "grace ghost"), clock.now())
     clock.advance(40.0)
+    det.observe(_ev(clock.now(), 5, "real newcomer"), clock.now())
     det.observe(_ev(clock.now(), 5, "real newcomer"), clock.now())
     clock.advance(61.0)
     alerts = _drain(det, clock)
@@ -271,7 +276,7 @@ def test_rare_sequence_learns_common_loops_and_fires_on_novel_repeat() -> None:
     assert _drain(det, clock) == []  # novel templates are new_template's job
     # an unseen PERMUTATION of well-known templates is a genuinely rare ordering
     _cycle(det, clock, [1], 6)
-    _cycle(det, clock, [3, 2, 1], 3)
+    _cycle(det, clock, [3, 2, 1], 4)
     alerts = _drain(det, clock)
     _check_schema(alerts, "rare_sequence")
     assert len(alerts) >= 1
@@ -281,11 +286,11 @@ def test_rare_sequence_learns_common_loops_and_fires_on_novel_repeat() -> None:
     assert a.severity is Severity.ANOMALOUS
     assert "seen 0 times during learning" in a.baseline_desc
     assert "(n-gram 3->2->1)" in a.baseline_desc
-    assert a.observed_value == 3.0
+    assert a.observed_value == 4.0
     _cycle(det, clock, [1, 2, 3], 5)
     assert _drain(det, clock) == []
-    clock.advance(700.0)
-    _cycle(det, clock, [3, 2, 1], 3)
+    clock.advance(950.0)
+    _cycle(det, clock, [3, 2, 1], 4)
     again = _drain(det, clock)
     refired = [x for x in again if x.group_key == "rare_sequence:(3, 2, 1)"]
     assert len(refired) == 1
@@ -311,40 +316,45 @@ def test_rare_sequence_cooldown_suppresses_immediate_refire() -> None:
     _cycle(det, clock, [7, 8], 300, dt=0.05)
     _cycle(det, clock, [4, 5], 10)
     gate.done = True
-    _cycle(det, clock, [4, 7, 8], 3)
+    # gram (5,7,4) unseen; pairs (5,7),(7,4) unseen; components well-known
+    _cycle(det, clock, [5, 7, 4], 4)
     first = _drain(det, clock)
     _check_schema(first, "rare_sequence")
     keys = {a.group_key for a in first}
-    assert "rare_sequence:(4, 7, 8)" in keys
-    clock.advance(700.0)
-    _cycle(det, clock, [4, 7, 8], 3)
+    assert "rare_sequence:(5, 7, 4)" in keys
+    clock.advance(500.0)
+    _cycle(det, clock, [5, 7, 4], 4)
     mid = _drain(det, clock)
     mid_keys = {a.group_key for a in mid}
-    assert "rare_sequence:(4, 7, 8)" not in mid_keys  # cooldown holds
-    clock.advance(600.0)
-    _cycle(det, clock, [4, 7, 8], 3)
+    assert "rare_sequence:(5, 7, 4)" not in mid_keys  # cooldown holds
+    clock.advance(800.0)
+    _cycle(det, clock, [5, 7, 4], 4)
     second = _drain(det, clock)
     _check_schema(second, "rare_sequence")
-    refired = [a for a in second if a.group_key == "rare_sequence:(4, 7, 8)"]
+    refired = [a for a in second if a.group_key == "rare_sequence:(5, 7, 4)"]
     assert len(refired) == 1
 
 
 def test_rare_sequence_hourly_cap_bounds_floods() -> None:
+    import itertools
+
     clock = FakeClock()
     store = BaselineStore(clock)
     gate = _Gate()
     cfg = DetectorConfig(sequence_max_alerts_per_hour=2)
     det = RareSequenceDetector(_ctx(clock, store, gate, cfg))
     for tid in range(1, 12):
-        _cycle(det, clock, [tid, (tid % 11) + 1], 20, dt=0.05)
+        _cycle(det, clock, [tid], 20, dt=0.05)  # solo loops: no cross pairs
     gate.done = True
-    for start in range(1, 12):
-        trio = [start, ((start + 1) % 11) + 1, ((start + 2) % 11) + 1]
-        for tid in trio[:2]:
-            _cycle(det, clock, [tid], 6)
-        _cycle(det, clock, trio, 3)
+    combos = list(itertools.permutations(range(1, 12), 3))[:8]
+    for trio in combos:
+        _cycle(det, clock, list(trio), 4)
         clock.advance(60.0)
     alerts = _drain(det, clock)
     _check_schema(alerts, "rare_sequence")
     assert len(alerts) <= 2
     assert det.suppressed_overflow >= 1
+
+
+
+

@@ -124,7 +124,7 @@ def test_volume_seasonal_stream_never_alerts_then_spike_fires_exactly_once():
     assert a.window_end == START + 520 * HOUR
     assert a.observed_value == 60.0
     assert a.baseline_value is not None and a.baseline_value <= 4.0
-    assert "over 4 slots" in a.baseline_desc
+    assert "over 3 weekly slots" in a.baseline_desc
     assert "x median" in a.deviation_desc and "robust z=" in a.deviation_desc
     assert a.threshold_value == 4.0
     assert a.severity in (Severity.ANOMALOUS, Severity.CRITICAL)
@@ -223,7 +223,7 @@ def test_numeric_shift_fires_on_latency_jump_and_stays_quiet_when_identical():
     first = fires[0]
     assert first.detector == "numeric_shift"
     assert first.template_text == TPL_N
-    assert first.window_start == first.window_end - 60.0
+    assert 0.0 < first.window_end - first.window_start <= 60.0 * 2
     assert first.baseline_value is not None and 85.0 <= first.baseline_value <= 115.0
     assert first.observed_value is not None and 285.0 <= first.observed_value <= 315.0
     assert "increase" in first.deviation_desc
@@ -251,3 +251,5 @@ def test_numeric_high_cardinality_noise_is_memory_bounded():
             START + float(i),
         )
     assert len(det._templates["svc2"]["hot"].vals) <= 2000
+
+

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from datetime import datetime, timezone
 
 from ..events import Alert, Event, Severity
@@ -45,6 +46,10 @@ class VolumeDetector(BaseDetector):
         self._counts: dict[str, int] = {}
         self._total: int = 0
         self._buf: list[Alert] = []
+        self._hod: dict[str, dict[int, deque[int]]] = {}
+
+    def _note_recent(self, key: str, count: int, total: int) -> None:
+        self._note_hod(key, self._closed_start, count)
 
     def observe(self, ev: Event, now: float) -> None:
         ts = float(ev.ts)
@@ -84,45 +89,103 @@ class VolumeDetector(BaseDetector):
         counts, self._counts = self._counts, {}
         total, self._total = self._total, 0
         start = bucket * _HOUR
+        self._closed_start = start
         out: list[Alert] = []
+        # Score against strictly PRIOR history first, then record this
+        # bucket - otherwise the spike becomes its own baseline.
         for text, count in counts.items():
-            self.ctx.baselines.observe_volume("volume:" + text, start, count)
-            alert = self._evaluate(text, "volume:" + text, count, start)
+            key = "volume:" + text
+            alert = self._evaluate(text, key, count, start, total)
+            self.ctx.baselines.observe_volume(key, start, count)
+            self._note_recent(key, count, total)
             if alert is not None:
                 out.append(alert)
+        alert = self._evaluate(_GLOBAL_TEXT, _GLOBAL_KEY, total, start, total)
         self.ctx.baselines.observe_volume(_GLOBAL_KEY, start, total)
-        alert = self._evaluate(_GLOBAL_TEXT, _GLOBAL_KEY, total, start)
+        self._note_recent(_GLOBAL_KEY, total, total)
         if alert is not None:
             out.append(alert)
         return out
 
-    def _evaluate(self, text: str, key: str, count: int, start: float) -> Alert | None:
+    def _evaluate(self, text: str, key: str, count: int, start: float, total_now: int) -> Alert | None:
         cfg = self.ctx.config
+        if key == _GLOBAL_KEY:
+            baseline = self.ctx.baselines.volume_baseline(key, start)
+            if baseline is None or baseline.n < _MIN_BASELINE_SLOTS:
+                return None
+            med = baseline.median
+            mad = max(abs(baseline.mad), 0.05 * abs(baseline.median))
+            return self._score(text, key, count, start, cfg, med, mad, f"median {med:g}/hr for slot {_slot_label(start)} over {baseline.n} weekly slots", f"{count / med:.1f}x median" if med > 0 else f"count {count}")
+        # Ladder of baselines, most seasonal first; each states itself.
         baseline = self.ctx.baselines.volume_baseline(key, start)
-        if baseline is None or baseline.n < _MIN_BASELINE_SLOTS:
-            return None
+        if baseline is not None and baseline.n >= _MIN_BASELINE_SLOTS:
+            med = baseline.median
+            mad = max(abs(baseline.mad), 0.05 * abs(baseline.median))
+            desc = (
+                f"median {med:g}/hr for slot {_slot_label(start)} "
+                f"over {baseline.n} weekly slots"
+            )
+            return self._score(text, key, count, start, cfg, med, mad, desc, f"{count / med:.1f}x median")
+        hod = self._hour_of_day_counts(key, start)
+        if hod:
+            ordered = sorted(hod)
+            med = float(ordered[len(ordered) // 2])
+            spread = max(med - ordered[(len(ordered) - 1) // 2], 0.5 * med)
+            desc = (
+                f"median {med:g}/hr at this hour of day over {len(ordered)} days "
+                f"(weekly slot history still filling)"
+            )
+            return self._score(text, key, count, start, cfg, med, spread, desc, f"{count / med:.1f}x same-hour median")
+        # First observation of this hour-of-day: record silently.
+        return None
+
+    def _hour_of_day_counts(self, key: str, start: float) -> list[int]:
+        hod = int((start % 86400.0) // 3600.0)
+        ring = self._hod.get(key)
+        if not ring:
+            return []
+        return list(ring.get(hod, ()))
+
+    def _note_hod(self, key: str, start: float, count: int) -> None:
+        hod = int((start % 86400.0) // 3600.0)
+        per_key = self._hod.setdefault(key, {})
+        bucket = per_key.setdefault(hod, deque(maxlen=64))
+        bucket.append(count)
+
+    def _score(self, text, key, count, start, cfg, med, spread, desc, ratio_desc) -> Alert | None:
         if count < cfg.volume_min_count:
             return None
-        z = robust_z(float(count), baseline.median, baseline.mad)
+        # Spread floor: count noise is never smaller than Poisson sqrt(med),
+        # and tiny historical counts need an absolute floor too.
+        spread = max(spread, med ** 0.5 if med > 0 else 0.0, 2.0)
+        z = robust_z(float(count), med, spread)
         if z < cfg.volume_elevated_z:
             return None
         severity = Severity.from_score_bands(
             z, cfg.volume_elevated_z, cfg.volume_anomalous_z, cfg.volume_critical_z
         )
-        med = baseline.median
-        if med > 0:
-            deviation = f"{count / med:.1f}x median (robust z={z:.1f})"
-        else:
-            deviation = f"count {count} vs median 0 (robust z={z:.1f})"
+        deviation = f"{ratio_desc} (robust z={z:.1f})"
+        return self._build_alert(text, count, start, med, desc, deviation, z, severity, cfg, key)
+
+    def _build_alert(
+        self,
+        text: str,
+        count: int,
+        start: float,
+        med: float,
+        desc: str,
+        deviation: str,
+        z: float,
+        severity: Severity,
+        cfg,
+        key: str = "",
+    ) -> Alert:
         return Alert(
             detector=self.id,
             severity=severity,
             template_id=None,
             template_text=text,
-            baseline_desc=(
-                f"median {med:g}/hr for slot {_slot_label(start)} "
-                f"over {baseline.n} slots"
-            ),
+            baseline_desc=desc,
             baseline_value=med,
             observed_desc=(
                 f"{count} events in {_hhmm(start)}-{_hhmm(start + _HOUR)} bucket"
@@ -134,6 +197,6 @@ class VolumeDetector(BaseDetector):
             threshold_value=cfg.volume_elevated_z,
             window_start=start,
             window_end=start + _HOUR,
-            group_key=key,
+            group_key=key or ("volume:" + text),
             event_time=start + _HOUR,
         )

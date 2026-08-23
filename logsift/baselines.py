@@ -225,16 +225,17 @@ class BaselineStore:
             return None
         return VolumeBaseline(median=med, mad=spread, n=len(counts))
 
-    def observe_numeric(self, key: str, value: float) -> None:
+    def observe_numeric(self, key: str, value: float, epoch: float | None = None) -> None:
         """Record one numeric sample (latency etc.) into a capped ring.
 
         The ring holds at most ``2 * max_samples_per_slot`` values, oldest
-        first. Non-finite values are ignored; timestamps come from the clock.
+        first. Non-finite values are ignored. ``epoch`` should be the event
+        time of the sample; when omitted the clock is used (live tail only).
         """
         v = float(value)
         if not math.isfinite(v):
             return
-        now = float(self._clock.now())
+        now = float(epoch) if epoch is not None else float(self._clock.now())
         if self._excluded(now):
             return
         entry = self._entry(key, "numeric", now)

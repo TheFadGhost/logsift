@@ -67,7 +67,7 @@ SHIFT_DURATION_MS = (330, 481)
 SURGE_ERROR_PROB = 0.15
 
 NEW_TEMPLATE_COUNT = 40
-RARE_TRIPLES = 6
+RARE_TRIPLES = 8
 RARE_GAP_SECONDS = 90
 RESERVED_LINES = NEW_TEMPLATE_COUNT + RARE_TRIPLES * 3
 
@@ -394,25 +394,11 @@ def _f_purge(rng: random.Random, _d: tuple[int, int]) -> tuple[str, dict]:
     }
 
 
-def _f_seq_a(rng: random.Random, _d: tuple[int, int]) -> tuple[str, dict]:
-    bid = "bt-%04d" % rng.randrange(10000)
-    tasks = rng.randrange(8, 90)
-    return f"dispatch batch {bid} opened with {tasks} tasks", {
-        "batch_id": bid, "task_count": tasks,
-    }
-
-
-def _f_seq_b(rng: random.Random, _d: tuple[int, int]) -> tuple[str, dict]:
-    owner = "wk-%02d" % rng.randrange(1, 60)
-    ttl = rng.randrange(15, 60)
-    return f"claim lease renewed owner {owner} ttl {ttl} s", {
-        "owner": owner, "ttl_s": ttl,
-    }
-
 
 FAM_PURGE = _app("edge.purge.plan", "edge-cache", 0.0, 0.0, 0.0, _f_purge)
-FAM_SEQ_A = _app("sched.dispatch.batch", "scheduler", 0.0, 0.0, 0.0, _f_seq_a)
-FAM_SEQ_B = _app("queue.lease.renew", "worker-queue", 0.0, 0.0, 0.0, _f_seq_b)
+FAM_SEQ_A = APP_FAMILIES[2]
+FAM_SEQ_B = APP_FAMILIES[9]
+FAM_SEQ_C = APP_FAMILIES[17]
 
 
 @dataclass(frozen=True)
@@ -516,9 +502,6 @@ def _s_batch_drain(rng: random.Random) -> str:
     return f"drain pass moved {rng.randrange(10, 5000)} items to archive"
 
 
-def _s_net_backoff(rng: random.Random) -> str:
-    return f"route flap suspected toward {_doc_ip(rng)}; probe backoff engaged"
-
 
 SYSLOG_FAMILIES: tuple[SyslogFamily, ...] = (
     SyslogFamily("sy.auth.accept", 3.0, "authd", 812, 38, _s_auth_accept),
@@ -529,7 +512,6 @@ SYSLOG_FAMILIES: tuple[SyslogFamily, ...] = (
     SyslogFamily("sy.pkg.current", 1.4, "pkgupd", 87, 38, _s_pkg_current),
     SyslogFamily("sy.batch.drain", 1.8, "batchrun", 961, 38, _s_batch_drain),
 )
-FAM_SEQ_C = SyslogFamily("sy.net.backoff", 0.0, "netwatch", 533, 36, _s_net_backoff)
 
 
 def _cumulative(weights: list[float]) -> tuple[list[float], float]:
@@ -662,9 +644,9 @@ def emit_syslog(fam: SyslogFamily, ts: float, rng: random.Random) -> str:
 
 _ANOMALY_TABLE = (
     ("rare_sequence", RARE_START, RARE_END,
-     "dispatch batch -> claim lease renewed -> route flap suspected (ordered triple)",
-     "an ordered triple of three otherwise-absent families repeats "
-     f"{RARE_TRIPLES} times at {RARE_GAP_SECONDS} s spacing"),
+     "auth.login.fail -> pay.recon.batch -> q.job.dead (ordered triple)",
+     "three established low-traffic families emitted back-to-back in an order "
+     f"never seen naturally, repeated {RARE_TRIPLES} times at {RARE_GAP_SECONDS} s spacing"),
     ("new_template", NEW_T_START, NEW_T_END,
      "purge plan <*> committed across <*> regions",
      f"a family seen nowhere else in the timeline appears {NEW_TEMPLATE_COUNT} times "
@@ -773,14 +755,14 @@ def _generate_records(lines: int, seed: int) -> list[tuple[float, int, str]]:
         seq += 1
     for k in range(RARE_TRIPLES):
         base_t = BASE_EPOCH + RARE_START + k * RARE_GAP_SECONDS
-        ta = base_t + rng.random() * 0.4
-        tb = ta + 0.6 + rng.random() * 0.4
-        tc = tb + 0.6 + rng.random() * 0.4
+        ta = base_t
+        tb = ta + 0.15
+        tc = tb + 0.20
         records.append((ta, seq, emit_app(FAM_SEQ_A, ta, "info", "json", rng, NORMAL_DURATION_MS)))
         seq += 1
         records.append((tb, seq, emit_app(FAM_SEQ_B, tb, "info", "logfmt", rng, NORMAL_DURATION_MS)))
         seq += 1
-        records.append((tc, seq, emit_syslog(FAM_SEQ_C, tc, rng)))
+        records.append((tc, seq, emit_app(FAM_SEQ_C, tc, "info", "json", rng, NORMAL_DURATION_MS)))
         seq += 1
     records.sort(key=lambda rec: (rec[0], rec[1]))
     return records
@@ -882,3 +864,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

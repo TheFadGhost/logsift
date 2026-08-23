@@ -52,15 +52,34 @@ class RareSequenceDetector(BaseDetector):
         self._min_component = max(1, int(cfg.sequence_min_component_count))
         self._hour_cap = max(1, int(cfg.sequence_max_alerts_per_hour))
         self._base: OrderedDict[tuple[int, ...], int] = OrderedDict()
+        self._pairs: dict[tuple[int, int], int] = {}
         self._learn_counts: dict[int, int] = {}
         self._learn: deque[int] = deque(maxlen=self._n)
         self._tail: deque[int] = deque(maxlen=self._n)
         self._obs: OrderedDict[tuple[int, ...], deque[float]] = OrderedDict()
         self._fired_at: dict[tuple[int, ...], float] = {}
         self._alert_times: deque[float] = deque(maxlen=256)
+        self._recent: deque[tuple[float, int]] = deque(maxlen=4096)
         self.suppressed_overflow = 0
+        self._last_event_ts: float | None = None
         self._texts: OrderedDict[int, str] = OrderedDict()
         self._outbox: list[Alert] = []
+
+    def _flood_dominates(self, now: float) -> bool:
+        """True when a single template holds most of the recent stream."""
+        share_limit = float(
+            getattr(self.ctx.config, "sequence_max_dominant_share", 0.6)
+        )
+        horizon = now - OBS_WINDOW_S
+        while self._recent and self._recent[0][0] < horizon:
+            self._recent.popleft()
+        counts: dict[int, int] = {}
+        for _ts, tid in self._recent:
+            counts[tid] = counts.get(tid, 0) + 1
+        if not counts:
+            return False
+        top = max(counts.values())
+        return (top / len(self._recent)) > share_limit
 
     def observe(self, ev: Event, now: float) -> None:
         tid = ev.template_id
@@ -68,8 +87,12 @@ class RareSequenceDetector(BaseDetector):
             return
         if ev.template_text:
             self._remember_text(tid, ev.template_text)
+        # Component familiarity is judged on ROLLING totals: a low-traffic
+        # template may be absent from a short learning window yet be a
+        # well-established part of the stream by the time it appears in an
+        # unusual ordering.
+        self._learn_counts[tid] = self._learn_counts.get(tid, 0) + 1
         if not self.ctx.warmup_complete():
-            self._learn_counts[tid] = self._learn_counts.get(tid, 0) + 1
             self._learn.append(tid)
             if len(self._learn) == self._n:
                 gram = tuple(self._learn)
@@ -77,15 +100,40 @@ class RareSequenceDetector(BaseDetector):
                 self._base.move_to_end(gram)
                 while len(self._base) > self._cap:
                     self._base.popitem(last=False)
+                if self._n >= 2:
+                    for i in range(self._n - 1):
+                        pair = (gram[i], gram[i + 1])
+                        self._pairs[pair] = self._pairs.get(pair, 0) + 1
             return
+        # A "sequence" is a temporally contiguous run of events: when the gap
+        # since the previous event exceeds sequence_gap_s, the ordering
+        # context resets. The n-gram therefore means "these events happened
+        # back-to-back", which survives tight bursts and ignores
+        # coincidences spread over minutes.
+        gap_limit = float(getattr(self.ctx.config, "sequence_gap_s", 2.0))
+        if self._last_event_ts is not None and now - self._last_event_ts > gap_limit:
+            self._tail.clear()
+        self._last_event_ts = now
         self._tail.append(tid)
+        self._recent.append((float(now), tid))
         if len(self._tail) < self._n:
             return
         gram = tuple(self._tail)
+        if len(set(gram)) < len(gram):
+            # Orderings that repeat a template are density phenomena
+            # (self-runs, alternating pairs); the volume detector owns them.
+            # Rare sequences mean an unusual ordering of DISTINCT events.
+            return
         if not self._components_known(gram):
             return
         cnt = self._base.get(gram)
         if cnt is not None and cnt > self.ctx.config.sequence_max_baseline_count:
+            return
+        if not self._pairs_rare(gram):
+            return
+        if self._flood_dominates(now):
+            # During a flood one template dominates the stream and adjacency
+            # patterns are its shadow, not a signal; volume owns that story.
             return
         dq = self._obs.get(gram)
         if dq is None:
@@ -100,7 +148,8 @@ class RareSequenceDetector(BaseDetector):
         while dq and dq[0] < horizon:
             dq.popleft()
         min_obs = self.ctx.config.sequence_min_observed
-        if len(dq) < min_obs:
+        required = min_obs
+        if len(dq) < required:
             return
         last = self._fired_at.get(gram)
         if last is not None and now - last < self.ctx.config.sequence_cooldown_s:
@@ -112,12 +161,25 @@ class RareSequenceDetector(BaseDetector):
         if not self._under_hourly_cap(now):
             self.suppressed_overflow += 1
             return
-        self._outbox.append(self._emit(gram, cnt, k, oldest, now))
+        self._outbox.append(self._emit(gram, cnt, k, oldest, now, required))
 
     def _components_known(self, gram: tuple[int, ...]) -> bool:
         return all(
             self._learn_counts.get(t, 0) >= self._min_component for t in gram
         )
+
+    def _pairs_rare(self, gram: tuple[int, ...]) -> bool:
+        """A qualifying triple must not merely be unseen - every adjacent pair
+        must also have been rare during learning. Random co-occurrences of
+        common templates usually contain at least one everyday adjacency and
+        are filtered here."""
+        if self._n < 2:
+            return True
+        max_cnt = self.ctx.config.sequence_max_baseline_count
+        for i in range(self._n - 1):
+            if self._pairs.get((gram[i], gram[i + 1]), 0) > max_cnt:
+                return False
+        return True
 
     def _under_hourly_cap(self, now: float) -> bool:
         horizon = now - 3600.0
@@ -146,6 +208,7 @@ class RareSequenceDetector(BaseDetector):
         k: int,
         oldest: float,
         now: float,
+        required: int,
     ) -> Alert:
         cfg = self.ctx.config
         seen = float(baseline_cnt) if baseline_cnt is not None else 0.0
@@ -168,9 +231,9 @@ class RareSequenceDetector(BaseDetector):
             z=None,
             threshold_desc=(
                 f"baseline<={cfg.sequence_max_baseline_count} and "
-                f"k>={cfg.sequence_min_observed} in 10m"
+                f"k>={required} in 10m"
             ),
-            threshold_value=float(cfg.sequence_min_observed),
+            threshold_value=float(required),
             window_start=oldest,
             window_end=now,
             group_key=f"rare_sequence:{gram}",
