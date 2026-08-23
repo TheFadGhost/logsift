@@ -123,6 +123,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
     kind, value = _parse_target(target)
     clock = SystemClock()
     headless = ns.headless or not sys.stdout.isatty()
+    finite = bool(getattr(ns, "exit_on_eof", False))
 
     provider = SnapshotProvider()
     sink = None
@@ -135,7 +136,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
         handle = open(jsonl_target, "a", encoding="utf-8")
         sink = JsonlSink(handle)
 
-    source = _make_source(kind, value, cfg, clock, finite=False)
+    source = _make_source(kind, value, cfg, clock, finite=finite)
     engine = Engine(
         cfg,
         clock,
@@ -143,6 +144,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
         alert_sink=sink,
         source_name=source.describe(),
         verbose=ns.verbose,
+        eof_exceptions=((_StreamEnd,) if finite else ()),
     )
 
     if headless:
@@ -486,6 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="analyse a live stream (TUI on a terminal)")
     p_run.add_argument("target", nargs="?", default="-", help='"-", a file path, dir:PATH, or tcp:host:port')
     p_run.add_argument("--headless", action="store_true", help="JSONL alerts to stdout instead of TUI")
+    p_run.add_argument("--exit-on-eof", dest="exit_on_eof", action="store_true", help="stop when a file source reaches EOF instead of following")
     p_run.add_argument("--jsonl", type=str, default=None, help='alert JSONL destination ("-": stdout)')
     _add_common(p_run)
     p_run.set_defaults(func=cmd_run)
