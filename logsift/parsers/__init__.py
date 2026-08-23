@@ -46,6 +46,8 @@ class ParserRegistry:
             else:
                 self._parsers.append(cls())
         self._locked: str | None = None
+        self._locked_parser: Parser | None = None
+        self._ordered: list[Parser] = list(self._parsers)
 
     @property
     def parser_names(self) -> tuple[str, ...]:
@@ -83,30 +85,39 @@ class ParserRegistry:
                 f"unknown parser {parser_name!r}; available: {', '.join(valid)}"
             )
         self._locked = parser_name
+        self._locked_parser = next(p for p in self._parsers if p.name == parser_name)
 
     @property
     def locked(self) -> str | None:
         return self._locked
 
     def parse_line(self, line: str) -> ParseResult:
-        ordered = list(self._parsers)
+        ordered = self._ordered
         if self._locked is not None:
-            locked_parser = next(p for p in ordered if p.name == self._locked)
-            locked_result = locked_parser.try_parse(line)
+            locked_result = self._locked_parser.try_parse(line)
             if locked_result is not None:
                 return locked_result
-            ordered = [p for p in ordered if p.name != self._locked]
-
-        first_failure: ParseResult | None = None
+        else:
+            for parser in ordered:
+                result = parser.try_parse(line)
+                if result is not None and result.ok:
+                    return result
+            # fall through to failure reporting below
+            return self._all_fail(line, ordered)
         for parser in ordered:
-            result = parser.try_parse(line)
-            if result is None:
+            if parser is self._locked_parser:
                 continue
-            if result.ok:
+            result = parser.try_parse(line)
+            if result is not None and result.ok:
                 return result
-            if first_failure is None:
-                first_failure = result
+        return self._all_fail(line, [self._locked_parser, *ordered])
 
+    def _all_fail(self, line: str, tried: list) -> ParseResult:
+        first_failure: ParseResult | None = None
+        for parser in tried:
+            result = parser.try_parse(line)
+            if result is not None and not result.ok and first_failure is None:
+                first_failure = result
         if first_failure is not None:
             return first_failure
         return self._unparsed_result(line)

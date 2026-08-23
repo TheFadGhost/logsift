@@ -147,7 +147,7 @@ class Engine:
         ctx = DetectorContext(
             clock=clock,
             baselines=self.baselines,
-            warmup_complete=lambda: self.baselines.warmup().complete,
+            warmup_complete=lambda: self._warm_cached,
             config=cfg.detectors,
         )
         self.detectors: list[BaseDetector] = [
@@ -182,6 +182,7 @@ class Engine:
         self._start_mono = clock.monotonic()
         self._last_baseline_save_mono = clock.monotonic()
         self._last_event_tick_ts: float | None = None
+        self._warm_cached = False
 
     # ------------------------------------------------------------------ run
 
@@ -306,6 +307,9 @@ class Engine:
         now = self._event_time_now()
         if self.stats.last_ts is not None:
             self._last_event_tick_ts = now
+        # Warm-up state is refreshed once per tick; per-event reads would
+        # recompute the same fraction thousands of times a second.
+        self._warm_cached = self.baselines.warmup().complete
         alerts: list = []
         for det in self.detectors:
             alerts.extend(det.tick(now))
@@ -339,7 +343,12 @@ class Engine:
     def _handle_assembled(self, text: str, source_name: str, flags: int) -> None:
         s = self.stats
         result = self._registry.parse_line(text)
-        event_ts = result.ts if (result.ok and result.ts is not None) else self.clock.now()
+        if result.ok and result.ts is not None:
+            event_ts = result.ts
+            ingest_ts = event_ts  # wall ingest time only matters when ts unknown
+        else:
+            event_ts = self.clock.now()
+            ingest_ts = event_ts
         if result.ok:
             s.parsed_ok += 1
             match = self.templater.process(result.message)
@@ -347,15 +356,15 @@ class Engine:
                 ts=event_ts,
                 message=result.message,
                 level=result.level,
-                fields=dict(result.fields),
-                numeric=dict(result.numeric),
+                fields=result.fields,
+                numeric=result.numeric,
                 template_id=match.template.template_id,
                 template_text=match.template.text,
                 source=source_name,
                 parse_status=ParseStatus.OK,
                 parser=result.parser,
                 raw_line=text[:2048],
-                ingest_ts=self.clock.now(),
+                ingest_ts=ingest_ts,
                 flags=flags,
             )
             if ev.level in ("error", "critical"):

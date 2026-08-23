@@ -29,6 +29,7 @@ lines per template.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from logsift.clock import Clock
@@ -46,14 +47,17 @@ class TemplateMatch:
     params: tuple[str, ...]
 
 
+_DIGIT_RE = re.compile(r"\d")
+
+
 def _has_digit(token: str) -> bool:
-    return any(ch.isdigit() for ch in token)
+    return _DIGIT_RE.search(token) is not None
 
 
 def _mask(tokens: tuple[str, ...], mask_digits: bool) -> tuple[str, ...]:
     if not mask_digits:
         return tokens
-    return tuple(SLOT if _has_digit(tok) or tok == SLOT else tok for tok in tokens)
+    return tuple(SLOT if _DIGIT_RE.search(tok) or tok == SLOT else tok for tok in tokens)
 
 
 class Templater:

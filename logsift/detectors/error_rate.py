@@ -34,6 +34,7 @@ class ErrorRateDetector(BaseDetector):
         self._total: int = 0
         self._errors: int = 0
         self._fired_win: int | None = None
+        self._last_partial_eval: float = -math.inf
         self._buf: list[Alert] = []
 
     def observe(self, ev: Event, now: float) -> None:
@@ -49,7 +50,8 @@ class ErrorRateDetector(BaseDetector):
             self._buf.extend(self._roll(self._win))
             self._win += 1
         self._total += 1
-        if ev.level is not None and str(ev.level).lower() in _ERROR_LEVELS:
+        lvl = ev.level
+        if lvl is not None and lvl in _ERROR_LEVELS:
             self._errors += 1
 
     def tick(self, now: float) -> list[Alert]:
@@ -58,21 +60,25 @@ class ErrorRateDetector(BaseDetector):
             while self._win < cur:
                 self._buf.extend(self._roll(self._win))
                 self._win += 1
-            start = self._win * self._w
-            end = now if now > start else start
-            base_errors, base_total, n_windows = self._baseline_before(start)
-            alert = self._evaluate(
-                self._win,
-                start,
-                end,
-                self._total,
-                self._errors,
-                base_errors,
-                base_total,
-                n_windows,
-            )
-            if alert is not None:
-                self._buf.append(alert)
+            # Partial-window scoring is throttled: a full scan of baseline
+            # windows per tick is wasted work while the window is young.
+            if now - self._last_partial_eval >= 5.0:
+                self._last_partial_eval = now
+                start = self._win * self._w
+                end = now if now > start else start
+                base_errors, base_total, n_windows = self._baseline_before(start)
+                alert = self._evaluate(
+                    self._win,
+                    start,
+                    end,
+                    self._total,
+                    self._errors,
+                    base_errors,
+                    base_total,
+                    n_windows,
+                )
+                if alert is not None:
+                    self._buf.append(alert)
         out, self._buf = self._buf, []
         return out
 

@@ -43,6 +43,11 @@ def _json_continues(line: str) -> bool:
     Degrades to False whenever logsift.parsers.jsonl cannot be imported, so
     the rule is inert until that module exists.
     """
+    # Cheap reject first: only JSON-ish lines can continue a document. This
+    # keeps the per-line cost near zero for non-JSON streams.
+    stripped = line.lstrip()
+    if not stripped or stripped[0] not in '{["}]':
+        return False
     try:
         from logsift.parsers.jsonl import needs_continuation
     except Exception:
@@ -77,7 +82,7 @@ class MultilineAssembler:
     - Order-driven only; no clock involvement. Deterministic per input.
     """
 
-    __slots__ = ("_rules", "_max_lines", "_max_bytes", "_parts", "_encoded")
+    __slots__ = ("_rules", "_max_lines", "_max_bytes", "_parts")
 
     def __init__(
         self,
@@ -93,23 +98,30 @@ class MultilineAssembler:
         self._max_lines = max_event_lines
         self._max_bytes = max_event_bytes
         self._parts: list[str] = []
-        self._encoded = 0
 
     def feed(self, line: str) -> list[str]:
         """Feed one raw line; returns 0..1 completed event texts."""
         completed: list[str] = []
-        encoded = len(line.encode("utf-8", "replace"))
         if any(rule.matches(line) for rule in self._rules):
-            if self._parts and (
-                len(self._parts) + 1 > self._max_lines
-                or self._encoded + encoded + len(self._parts) > self._max_bytes
-            ):
-                completed.append(self._take())
+            if self._parts:
+                # Cap checks only matter while an event is open; the common
+                # single-line path never pays for an encode here.
+                incoming = len(line.encode("utf-8", "replace"))
+                if (
+                    len(self._parts) + 1 > self._max_lines
+                    or self._event_bytes() + incoming > self._max_bytes
+                ):
+                    completed.append(self._take())
         elif self._parts:
             completed.append(self._take())
         self._parts.append(line)
-        self._encoded += encoded
         return completed
+
+    def _event_bytes(self) -> int:
+        total = 0
+        for part in self._parts:
+            total += len(part.encode("utf-8", "replace"))
+        return total
 
     def flush(self) -> list[str]:
         """At EOF: emit an unterminated tail as one event, exactly once."""
@@ -120,5 +132,5 @@ class MultilineAssembler:
     def _take(self) -> str:
         text = "\n".join(self._parts)
         self._parts.clear()
-        self._encoded = 0
         return text
+
