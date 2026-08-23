@@ -624,7 +624,7 @@ class FrameRenderer:
         prefix_w = 1 + 1 + SEV_WORD_W + 1 + DET_W + 1 + TID_W + 1
         tmpl_w = max(6, inner_w - prefix_w - TIME_W - 1)
         row = y + 1
-        bottom = y + h - 1
+        bottom = y + h - 2
         for idx, alert in enumerate(alerts):
             if row + 1 > bottom:
                 break

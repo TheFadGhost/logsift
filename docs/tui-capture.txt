@@ -1,0 +1,30 @@
+logsift src corpus.jsonl                                                                              up 1.44s
+in   14.1k l/s  win   14.1k l/s  err    0.7%  unparsed       0 (0.0%)  events   21.4k                         
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌─ top templates ────────────────────────────────────────────────────────────────────────────────────────────┐
+│      t7    3012   14.1% ████████████ {*} {*} {*}                                                           │
+│      t2    2411   11.2% █████████▋ request routed to upstream {*} status {*} in {*} ms                     │
+│      t3    1749    8.2% ███████ login succeeded for user {*}                                               │
+│     t16    1130    5.3% ████▌ charge captured for order {*} amount {*} {*}                                 │
+│     t11    1059    4.9% ████▎ job {*} finished in {*} ms exit {*}                                          │
+│     t28     964    4.5% ███▉ query plan cache hit ratio {*} for cohort {*}                                 │
+│      t8     884    4.1% ███▌ session token rotated for user {*}                                            │
+│      t9     844    3.9% ███▍ accepted public key for user {*} from {*} port {*}                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─ anomaly feed ─────────────────────────────────────────────────────────────────────────────────────────────┐
+│  ! anomalous rare_sequence      t2 request routed to upstream {*} status {*} in {*} ms           12:11:38  │
+│  baseline seen 0 times during learning (n-gram 3->7->2) -> observed 4 times in 10m rare ordering (thr      │
+│  baseline<=2 and k>=4 in 10m)                                                                              │
+│  + elevated  new_template      t40 purge plan {*} committed across {*} regions                   09:46:00  │
+│  baseline not present in baseline history -> observed first occurrence at 2026-06-01T09:45:00.006Z (count  │
+│  12 since) new template (thr warm-up complete + not seen in baseline)                                      │
+│  ! anomalous rare_sequence     t33 job {*} parked in dead letter after {*} attempts              03:04:30  │
+│  baseline seen 0 times during learning (n-gram 17->27->33) -> observed 4 times in 10m rare ordering (thr   │
+│  baseline<=2 and k>=4 in 10m)                                                                              │
+│  + elevated  new_template      t36 compaction merged {*} segments on volume {*}                  00:33:10  │
+│  baseline not present in baseline history -> observed first occurrence at 2026-06-01T00:32:06.440Z (count  │
+│  2 since) new template (thr warm-up complete + not seen in baseline)                                       │
+│                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ connected                                                       tab panels / enter detail / p pause / q quit 
+                                                                                                              
