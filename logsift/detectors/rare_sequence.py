@@ -60,26 +60,35 @@ class RareSequenceDetector(BaseDetector):
         self._fired_at: dict[tuple[int, ...], float] = {}
         self._alert_times: deque[float] = deque(maxlen=256)
         self._recent: deque[tuple[float, int]] = deque(maxlen=4096)
+        self._recent_counts: dict[int, int] = {}
         self.suppressed_overflow = 0
         self._last_event_ts: float | None = None
         self._texts: OrderedDict[int, str] = OrderedDict()
         self._outbox: list[Alert] = []
 
     def _flood_dominates(self, now: float) -> bool:
-        """True when a single template holds most of the recent stream."""
+        """True when a single template holds most of the recent stream.
+
+        Maintained incrementally: appends and prunes update counters in O(1).
+        """
         share_limit = float(
             getattr(self.ctx.config, "sequence_max_dominant_share", 0.6)
         )
         horizon = now - OBS_WINDOW_S
-        while self._recent and self._recent[0][0] < horizon:
-            self._recent.popleft()
-        counts: dict[int, int] = {}
-        for _ts, tid in self._recent:
-            counts[tid] = counts.get(tid, 0) + 1
-        if not counts:
+        recent = self._recent
+        counts = self._recent_counts
+        while recent and recent[0][0] < horizon:
+            _ts, old = recent.popleft()
+            left = counts.get(old, 0) - 1
+            if left <= 0:
+                counts.pop(old, None)
+            else:
+                counts[old] = left
+        total = len(recent)
+        if not total or not counts:
             return False
         top = max(counts.values())
-        return (top / len(self._recent)) > share_limit
+        return (top / total) > share_limit
 
     def observe(self, ev: Event, now: float) -> None:
         tid = ev.template_id
@@ -116,6 +125,7 @@ class RareSequenceDetector(BaseDetector):
         self._last_event_ts = now
         self._tail.append(tid)
         self._recent.append((float(now), tid))
+        self._recent_counts[tid] = self._recent_counts.get(tid, 0) + 1
         if len(self._tail) < self._n:
             return
         gram = tuple(self._tail)

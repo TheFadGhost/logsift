@@ -18,11 +18,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 if sys.platform == "win32":
+    import ctypes.wintypes as _wt
 
     class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
         _fields_ = [
-            ("cb", ctypes.c_uint32),
-            ("PageFaultCount", ctypes.c_uint32),
+            ("cb", _wt.DWORD),
+            ("PageFaultCount", _wt.DWORD),
             ("PeakWorkingSetSize", ctypes.c_size_t),
             ("WorkingSetSize", ctypes.c_size_t),
             ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
@@ -33,13 +34,21 @@ if sys.platform == "win32":
             ("PeakPagefileUsage", ctypes.c_size_t),
         ]
 
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    _k32.GetCurrentProcess.restype = _wt.HANDLE
+    _psapi.GetProcessMemoryInfo.argtypes = [
+        _wt.HANDLE,
+        ctypes.POINTER(_PROCESS_MEMORY_COUNTERS),
+        _wt.DWORD,
+    ]
+    _psapi.GetProcessMemoryInfo.restype = _wt.BOOL
+
     def _rss_bytes() -> int:
-        psapi = ctypes.windll.psapi
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetCurrentProcess()
         counters = _PROCESS_MEMORY_COUNTERS()
         counters.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
-        if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+        handle = _k32.GetCurrentProcess()
+        if not _psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
             return 0
         return int(counters.WorkingSetSize)
 

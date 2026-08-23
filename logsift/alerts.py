@@ -38,6 +38,7 @@ Policies (all enforced by tests/test_alerts.py):
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 import urllib.error
@@ -231,7 +232,16 @@ class AlertManager:
         self._last_prune_ts = -1.0
 
     def submit(self, alert: Alert) -> dict | None:
-        ts = float(self._clock.now())
+        # Grouping and throttling run on EVENT time so replay behaves exactly
+        # like live ingestion and payloads stay deterministic; the injected
+        # clock is only a fallback for alerts without any time.
+        ts = float(
+            alert.event_time
+            if alert.event_time is not None and alert.event_time > 0
+            else alert.window_end
+        )
+        if not math.isfinite(ts) or ts <= 0.0:
+            ts = float(self._clock.now())
         self._prune(ts)
         group = self._groups.get(alert.group_key)
         if group is None:
