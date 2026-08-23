@@ -63,7 +63,7 @@ class TuiApp:
         self.fps = max(1.0, min(MAX_FPS, float(fps)))
         self.keyboard = keyboard
         self.renderer = FrameRenderer(theme)
-        self.differ = DiffRenderer()
+        self.differ = DiffRenderer(theme=theme)
         self._running = True
         self._overlay_open = False
         self._focus = "feed"

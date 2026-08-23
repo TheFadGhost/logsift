@@ -238,7 +238,7 @@ def cmd_replay(ns: argparse.Namespace) -> int:
                 span_lo = engine.stats.first_ts
             if engine.stats.last_ts is not None and (span_hi is None or engine.stats.last_ts > span_hi):
                 span_hi = engine.stats.last_ts
-            all_alerts.extend(engine.recent_alerts())
+            all_alerts.extend(a.to_json_dict() for a in engine.recent_alerts())
             _print_engine_summary(engine, sys.stderr)
         finally:
             source.stop()
@@ -378,7 +378,7 @@ def cmd_summary(ns: argparse.Namespace) -> int:
     tstats = engine.index.template_stats()
     alerts = [
         a
-        for a in engine.recent_alerts()
+        for a in (x.to_json_dict() for x in engine.recent_alerts())
         if (since is None or _iso_to_epoch(a.get("time")) >= since)
         and (until is None or _iso_to_epoch(a.get("time")) < until)
     ]

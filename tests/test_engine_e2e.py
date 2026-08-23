@@ -22,7 +22,7 @@ def _raise_end(_seconds: float) -> None:
     raise _StreamEnd
 
 
-def _replay(path: Path, warmup: float = 600.0) -> tuple[list[dict], "Engine"]:
+def _replay(path: Path, warmup: float = 600.0) -> tuple[list[dict], Engine]:
     cfg = Config(max_events=50_000, warmup_seconds=warmup)
     clock = SystemClock()
     source = FileFollowSource(
@@ -33,7 +33,7 @@ def _replay(path: Path, warmup: float = 600.0) -> tuple[list[dict], "Engine"]:
         engine.run_source(source)
     except _StreamEnd:
         pass
-    return list(engine.recent_alerts()), engine
+    return [a.to_json_dict() for a in engine.recent_alerts()], engine
 
 
 def _make_stream(path: Path) -> None:

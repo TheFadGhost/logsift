@@ -22,7 +22,8 @@ from ..textwidth import (
     truncate_end,
     truncate_middle,
 )
-from ..themes import Theme, Token, severity_token
+from ..themes import Mode, Theme, Token, severity_token
+from ..textwidth import ANSI_RE
 
 COUNT_W = 7
 RATE_W = 11
@@ -792,9 +793,14 @@ class FrameRenderer:
 
 
 class DiffRenderer:
-    """Emits only changed rows; full repaint on invalidate()."""
+    """Emits only changed rows; full repaint on invalidate().
 
-    def __init__(self) -> None:
+    When the active theme runs with colour off (NO_COLOR, non-TTY), output
+    degrades to completely escape-free plain text: rows joined by newlines.
+    """
+
+    def __init__(self, theme=None) -> None:
+        self._theme = theme
         self._prev: list[str] | None = None
         self._force = True
 
@@ -807,6 +813,11 @@ class DiffRenderer:
 
     def emit(self, frame: Frame) -> str:
         rows = frame.rows
+        if self._theme is not None and getattr(self._theme, "mode", None) == Mode.OFF:
+            self._prev = list(rows)
+            self._force = False
+            plain = [ANSI_RE.sub("", row) for row in rows]
+            return "\n".join(plain)
         out: list[str] = []
         prev = None if self._force else self._prev
         if prev is None or len(prev) != len(rows):

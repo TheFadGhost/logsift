@@ -29,6 +29,7 @@ from .events import (
     FLAG_INVALID_UTF8,
     FLAG_TRUNCATED,
     MAX_LINE_BYTES,
+    Alert,
     Event,
     ParseStatus,
 )
@@ -177,7 +178,7 @@ class Engine:
         self._source_error: str | None = None
         self._rate = _RateCounter()
         self._minute_ring: deque[tuple[float, int]] = deque(maxlen=180)
-        self._recent_alerts: deque[dict] = deque(maxlen=200)
+        self._recent_alerts: deque[Alert] = deque(maxlen=200)
         self._last_line_mono: float | None = None
         self._start_mono = clock.monotonic()
         self._last_baseline_save_mono = clock.monotonic()
@@ -217,7 +218,7 @@ class Engine:
     def source_error(self) -> str | None:
         return self._source_error
 
-    def recent_alerts(self) -> tuple[dict, ...]:
+    def recent_alerts(self) -> tuple[Alert, ...]:
         return tuple(self._recent_alerts)
 
     # -------------------------------------------------------------- threads
@@ -412,7 +413,11 @@ class Engine:
             payload = self.alert_manager.submit(alert)
             if payload is not None:
                 self.stats.alerts_emitted += 1
-                self._recent_alerts.append(payload)
+                # Copy enrichment back onto the object so the TUI detail view
+                # shows the same examples/evidence the payload carries.
+                alert.examples = list(payload.get("examples", []))
+                alert.evidence_before = list(payload.get("evidence_before", []))
+                self._recent_alerts.append(alert)
             else:
                 self.stats.alerts_suppressed += 1
 
@@ -461,7 +466,7 @@ class Engine:
             warmup_eta_s=warmup.eta_s,
             paused=self._pause_event.is_set(),
             top_templates=summaries,
-            alerts=tuple(dict(a) for a in self._recent_alerts),
+            alerts=tuple(self._recent_alerts),
             volume_series=volume,
         )
         self.provider.publish(snap)
