@@ -47,6 +47,8 @@ class DetectorConfig:
     sequence_min_observed: int = 3
     sequence_cooldown_s: float = 600.0
     sequence_max_ngrams: int = 50000
+    sequence_min_component_count: int = 5
+    sequence_max_alerts_per_hour: int = 6
 
 
 @dataclass(slots=True)

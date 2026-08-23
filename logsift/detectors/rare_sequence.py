@@ -49,11 +49,16 @@ class RareSequenceDetector(BaseDetector):
         cfg = self.ctx.config
         self._n = max(1, int(cfg.sequence_ngram_n))
         self._cap = max(1, int(cfg.sequence_max_ngrams))
+        self._min_component = max(1, int(cfg.sequence_min_component_count))
+        self._hour_cap = max(1, int(cfg.sequence_max_alerts_per_hour))
         self._base: OrderedDict[tuple[int, ...], int] = OrderedDict()
+        self._learn_counts: dict[int, int] = {}
         self._learn: deque[int] = deque(maxlen=self._n)
         self._tail: deque[int] = deque(maxlen=self._n)
         self._obs: OrderedDict[tuple[int, ...], deque[float]] = OrderedDict()
         self._fired_at: dict[tuple[int, ...], float] = {}
+        self._alert_times: deque[float] = deque(maxlen=256)
+        self.suppressed_overflow = 0
         self._texts: OrderedDict[int, str] = OrderedDict()
         self._outbox: list[Alert] = []
 
@@ -64,6 +69,7 @@ class RareSequenceDetector(BaseDetector):
         if ev.template_text:
             self._remember_text(tid, ev.template_text)
         if not self.ctx.warmup_complete():
+            self._learn_counts[tid] = self._learn_counts.get(tid, 0) + 1
             self._learn.append(tid)
             if len(self._learn) == self._n:
                 gram = tuple(self._learn)
@@ -76,6 +82,8 @@ class RareSequenceDetector(BaseDetector):
         if len(self._tail) < self._n:
             return
         gram = tuple(self._tail)
+        if not self._components_known(gram):
+            return
         cnt = self._base.get(gram)
         if cnt is not None and cnt > self.ctx.config.sequence_max_baseline_count:
             return
@@ -101,7 +109,24 @@ class RareSequenceDetector(BaseDetector):
         oldest = dq[0]
         k = len(dq)
         dq.clear()
+        if not self._under_hourly_cap(now):
+            self.suppressed_overflow += 1
+            return
         self._outbox.append(self._emit(gram, cnt, k, oldest, now))
+
+    def _components_known(self, gram: tuple[int, ...]) -> bool:
+        return all(
+            self._learn_counts.get(t, 0) >= self._min_component for t in gram
+        )
+
+    def _under_hourly_cap(self, now: float) -> bool:
+        horizon = now - 3600.0
+        while self._alert_times and self._alert_times[0] < horizon:
+            self._alert_times.popleft()
+        if len(self._alert_times) >= self._hour_cap:
+            return False
+        self._alert_times.append(now)
+        return True
 
     def tick(self, now: float) -> list[Alert]:
         out = self._outbox

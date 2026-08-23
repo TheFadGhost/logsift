@@ -268,24 +268,27 @@ def test_rare_sequence_learns_common_loops_and_fires_on_novel_repeat() -> None:
     _cycle(det, clock, [1, 2, 3], 300)
     gate.done = True
     _cycle(det, clock, [4, 5, 6], 3)
+    assert _drain(det, clock) == []  # novel templates are new_template's job
+    # an unseen PERMUTATION of well-known templates is a genuinely rare ordering
+    _cycle(det, clock, [1], 6)
+    _cycle(det, clock, [3, 2, 1], 3)
     alerts = _drain(det, clock)
     _check_schema(alerts, "rare_sequence")
-    assert len(alerts) == 1
-    a = alerts[0]
+    assert len(alerts) >= 1
+    keys = {a.group_key for a in alerts}
+    assert "rare_sequence:(3, 2, 1)" in keys
+    a = next(x for x in alerts if x.group_key == "rare_sequence:(3, 2, 1)")
     assert a.severity is Severity.ANOMALOUS
-    assert a.group_key == "rare_sequence:(4, 5, 6)"
     assert "seen 0 times during learning" in a.baseline_desc
-    assert "(n-gram 4->5->6)" in a.baseline_desc
+    assert "(n-gram 3->2->1)" in a.baseline_desc
     assert a.observed_value == 3.0
     _cycle(det, clock, [1, 2, 3], 5)
     assert _drain(det, clock) == []
     clock.advance(700.0)
-    _cycle(det, clock, [4, 5, 6], 3)
+    _cycle(det, clock, [3, 2, 1], 3)
     again = _drain(det, clock)
-    _check_schema(again, "rare_sequence")
-    assert len(again) == 1
-    total = alerts + again
-    assert len(total) == 2
+    refired = [x for x in again if x.group_key == "rare_sequence:(3, 2, 1)"]
+    assert len(refired) == 1
 
 
 def test_rare_sequence_common_triples_never_fire() -> None:
@@ -306,22 +309,42 @@ def test_rare_sequence_cooldown_suppresses_immediate_refire() -> None:
     cfg = DetectorConfig(sequence_cooldown_s=1200.0)
     det = RareSequenceDetector(_ctx(clock, store, gate, cfg))
     _cycle(det, clock, [7, 8], 300, dt=0.05)
+    _cycle(det, clock, [4, 5], 10)
     gate.done = True
-    _cycle(det, clock, [4, 5, 6], 3)
+    _cycle(det, clock, [4, 7, 8], 3)
     first = _drain(det, clock)
     _check_schema(first, "rare_sequence")
-    assert len(first) == 1
-    assert first[0].group_key == "rare_sequence:(4, 5, 6)"
+    keys = {a.group_key for a in first}
+    assert "rare_sequence:(4, 7, 8)" in keys
     clock.advance(700.0)
-    _cycle(det, clock, [4, 5, 6], 3)
+    _cycle(det, clock, [4, 7, 8], 3)
     mid = _drain(det, clock)
-    assert {a.group_key for a in mid} == {
-        "rare_sequence:(5, 6, 4)",
-        "rare_sequence:(6, 4, 5)",
-    }
+    mid_keys = {a.group_key for a in mid}
+    assert "rare_sequence:(4, 7, 8)" not in mid_keys  # cooldown holds
     clock.advance(600.0)
-    _cycle(det, clock, [4, 5, 6], 3)
+    _cycle(det, clock, [4, 7, 8], 3)
     second = _drain(det, clock)
     _check_schema(second, "rare_sequence")
-    assert len(second) == 1
-    assert second[0].group_key == "rare_sequence:(4, 5, 6)"
+    refired = [a for a in second if a.group_key == "rare_sequence:(4, 7, 8)"]
+    assert len(refired) == 1
+
+
+def test_rare_sequence_hourly_cap_bounds_floods() -> None:
+    clock = FakeClock()
+    store = BaselineStore(clock)
+    gate = _Gate()
+    cfg = DetectorConfig(sequence_max_alerts_per_hour=2)
+    det = RareSequenceDetector(_ctx(clock, store, gate, cfg))
+    for tid in range(1, 12):
+        _cycle(det, clock, [tid, (tid % 11) + 1], 20, dt=0.05)
+    gate.done = True
+    for start in range(1, 12):
+        trio = [start, ((start + 1) % 11) + 1, ((start + 2) % 11) + 1]
+        for tid in trio[:2]:
+            _cycle(det, clock, [tid], 6)
+        _cycle(det, clock, trio, 3)
+        clock.advance(60.0)
+    alerts = _drain(det, clock)
+    _check_schema(alerts, "rare_sequence")
+    assert len(alerts) <= 2
+    assert det.suppressed_overflow >= 1
