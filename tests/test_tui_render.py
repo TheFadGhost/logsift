@@ -13,7 +13,7 @@ from logsift.clock import FakeClock
 from logsift.events import Alert, Severity
 from logsift.snapshot import Snapshot, SnapshotProvider, TemplateSummary
 from logsift.textwidth import ANSI_RE, display_width, rjust_width, strip_ansi_len
-from logsift.themes import Mode, Theme
+from logsift.themes import Mode, Theme, get_theme
 from logsift.tui.app import TuiApp
 from logsift.tui.renderer import (
     COUNT_W,
@@ -317,7 +317,7 @@ class TestOverlayRepaint:
         stream = io.StringIO()
         app = TuiApp(
             provider,
-            off_theme(),
+            get_theme("dark", mode=Mode.TRUECOLOR),
             FakeClock(),
             sleeper=lambda s: None,
             stream=stream,
