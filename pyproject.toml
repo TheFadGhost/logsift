@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "logsift"
-version = "0.1.0"
+version = "1.0.0"
 description = "Streaming log analyzer that learns normal message templates and flags anomalies as they happen"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,3 +29,4 @@ include = ["logsift*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
