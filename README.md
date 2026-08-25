@@ -1,5 +1,12 @@
 # Logsift
 
+> **built with ox alpha**
+>
+> most of this was written in august 2026 during the free preview window of
+> [ox alpha](https://openrouter.ai/stealth/ox-alpha), an anonymous stealth model
+> that turned up on openrouter for about a week. i set the direction and reviewed
+> what came back. the tests are real and they pass — clone it and run them.
+
 Logsift is a streaming log analyzer that learns the normal shapes of your log
 messages and flags anomalies as they happen - built for engineers who need to
 find the unusual thing in millions of lines without knowing in advance what
@@ -319,4 +326,3 @@ get plain text automatically.
 ## License
 
 MIT - see LICENSE.
-
